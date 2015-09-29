@@ -1,7 +1,7 @@
 node-lame
 =========
 ### NodeJS native bindings to libmp3lame & libmpg123
-[![Build Status](https://travis-ci.org/TooTallNate/node-lame.png?branch=master)](https://travis-ci.org/TooTallNate/node-lame)
+[![Build Status](https://travis-ci.org/TooTallNate/node-lame.svg?branch=master)](https://travis-ci.org/TooTallNate/node-lame)
 
 For all your async streaming MP3 encoding/decoding needs, there's `node-lame`!
 This module hooks into libmp3lame, the library that the `lame` command uses, to
@@ -32,9 +32,15 @@ var lame = require('lame');
 
 // create the Encoder instance
 var encoder = new lame.Encoder({
+  // input
   channels: 2,        // 2 channels (left and right)
   bitDepth: 16,       // 16-bit samples
-  sampleRate: 44100   // 44,100 Hz sample rate
+  sampleRate: 44100,  // 44,100 Hz sample rate
+
+  // output
+  bitRate: 128,
+  outSampleRate: 22050,
+  mode: lame.STEREO // STEREO (default), JOINTSTEREO, DUALCHANNEL or MONO
 });
 
 // raw PCM data from stdin gets piped into the encoder

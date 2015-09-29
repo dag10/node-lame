@@ -4,6 +4,7 @@ var path = require('path');
 var lame = require('../');
 var assert = require('assert');
 var fixtures = path.resolve(__dirname, 'fixtures');
+var outputName = path.resolve(__dirname, 'output.wav');
 
 describe('Decoder', function () {
 
@@ -19,18 +20,18 @@ describe('Decoder', function () {
 
     it('should emit "readable" events', function (done) {
       var file = fs.createReadStream(filename);
+      var output = fs.createWriteStream(outputName);
       var count = 0;
       var decoder = new lame.Decoder();
       decoder.on('readable', function () {
         count++;
-        var b;
-        while (null != (b = decoder.read()));
       });
       decoder.on('finish', function () {
         assert(count > 0);
+        fs.unlinkSync(outputName);
         done();
       });
-      file.pipe(decoder);
+      file.pipe(decoder).pipe(output);
     });
 
     it('should emit a single "format" event', function (done) {
@@ -45,33 +46,32 @@ describe('Decoder', function () {
 
     it('should emit a single "finish" event', function (done) {
       var file = fs.createReadStream(filename);
+      var output = fs.createWriteStream(outputName);
       var decoder = new lame.Decoder();
       decoder.on('finish', done);
-      file.pipe(decoder);
-
-      // enable "flow"
-      decoder.resume();
+      file.pipe(decoder).pipe(output);
     });
 
     it('should emit a single "end" event', function (done) {
       var file = fs.createReadStream(filename);
+      var output = fs.createWriteStream(outputName);
       var decoder = new lame.Decoder();
-      decoder.on('end', done);
-      file.pipe(decoder);
-
-      // enable "flow"
-      decoder.resume();
+      decoder.on('end', function () {
+        fs.unlinkSync(outputName);
+        done();
+      });
+      file.pipe(decoder).pipe(output);
     });
 
     it('should emit a single "id3v1" event', function (done) {
       var file = fs.createReadStream(filename);
       var decoder = new lame.Decoder();
       decoder.on('id3v1', function (id3) {
-        assert.equal(title, id3.title.replace(/\0*$/, ''));
-        assert.equal(artist, id3.artist.replace(/\0*$/, ''));
-        assert.equal(album, id3.album.replace(/\0*$/, ''));
-        assert.equal(year, id3.year.replace(/\0*$/, ''));
-        assert.equal(comment, id3.comment.replace(/\0*$/, ''));
+        assert.equal(title, id3.title);
+        assert.equal(artist, id3.artist);
+        assert.equal(album, id3.album);
+        assert.equal(year, id3.year);
+        assert.equal(comment, id3.comment);
         assert.equal(trackNumber, id3.trackNumber);
         assert.equal(genre, id3.genre);
         done();
@@ -86,11 +86,11 @@ describe('Decoder', function () {
       var file = fs.createReadStream(filename);
       var decoder = new lame.Decoder();
       decoder.on('id3v2', function (id3) {
-        assert.equal(title, id3.title.replace(/\0*$/, ''));
-        assert.equal(artist, id3.artist.replace(/\0*$/, ''));
-        assert.equal(album, id3.album.replace(/\0*$/, ''));
-        assert.equal(year, id3.year.replace(/\0*$/, ''));
-        assert.equal(comment, id3.comment.replace(/\0*$/, ''));
+        assert.equal(title, id3.title);
+        assert.equal(artist, id3.artist);
+        assert.equal(album, id3.album);
+        assert.equal(year, id3.year);
+        assert.equal(comment, id3.comment);
         done();
       });
       file.pipe(decoder);

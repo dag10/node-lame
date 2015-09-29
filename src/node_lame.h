@@ -16,18 +16,19 @@ struct encode_req {
   uv_work_t req;
   lame_global_flags *gfp;
   unsigned char *input;
-  int input_type;
+  pcm_type input_type;
+  int channels;
   int num_samples;
   unsigned char *output;
   int output_size;
   int rtn;
-  v8::Persistent<v8::Function> callback;
+  Nan::Persistent<v8::Function> callback;
 };
 
-void node_lame_encode_buffer_interleaved_async (uv_work_t *);
-void node_lame_encode_buffer_interleaved_after (uv_work_t *);
+void node_lame_encode_buffer_async (uv_work_t *);
+void node_lame_encode_buffer_after (uv_work_t *);
 
 void node_lame_encode_flush_nogap_async (uv_work_t *);
-#define node_lame_encode_flush_nogap_after node_lame_encode_buffer_interleaved_after
+#define node_lame_encode_flush_nogap_after node_lame_encode_buffer_after
 
 } // nodelame namespace
