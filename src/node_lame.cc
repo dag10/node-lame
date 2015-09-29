@@ -20,9 +20,11 @@
 #include "node_pointer.h"
 #include "node_lame.h"
 #include "lame.h"
+#include "nan.h"
 
 using namespace v8;
 using namespace node;
+using namespace nodelame;
 
 namespace nodelame {
 
@@ -30,140 +32,171 @@ namespace nodelame {
 #define PASTE(a, b) PASTE2(a, b)
 
 #define UNWRAP_GFP \
-  HandleScope scope; \
-  lame_global_flags *gfp = reinterpret_cast<lame_global_flags *>(UnwrapPointer(args[0]));
+  Nan::HandleScope scope; \
+  lame_global_flags *gfp = reinterpret_cast<lame_global_flags *>(UnwrapPointer(info[0]));
 
 #define FN(type, v8type, fn) \
-Handle<Value> PASTE(node_lame_get_, fn) (const Arguments& args) { \
+NAN_METHOD(PASTE(node_lame_get_, fn)) { \
   UNWRAP_GFP; \
   type output = PASTE(lame_get_, fn)(gfp); \
-  return scope.Close(Number::New(output)); \
+  info.GetReturnValue().Set(Nan::New<Number>(output)); \
 } \
-Handle<Value> PASTE(node_lame_set_, fn) (const Arguments& args) { \
+NAN_METHOD(PASTE(node_lame_set_, fn)) { \
   UNWRAP_GFP; \
-  type input = (type)args[1]->PASTE(v8type, Value)(); \
+  type input = (type)info[1]->PASTE(v8type, Value)(); \
   int output = PASTE(lame_set_, fn)(gfp, input); \
-  return scope.Close(Number::New(output)); \
+  info.GetReturnValue().Set(Nan::New<Number>(output)); \
 }
 
-
 /* get_lame_version() */
-Handle<Value> node_get_lame_version (const Arguments& args) {
-  HandleScope scope;
-  return scope.Close(String::New(get_lame_version()));
+NAN_METHOD(node_get_lame_version) {
+  info.GetReturnValue().Set(Nan::New<String>(get_lame_version()).ToLocalChecked());
 }
 
 
 /* get_lame_os_bitness() */
-Handle<Value> node_get_lame_os_bitness (const Arguments& args) {
-  HandleScope scope;
-  return scope.Close(String::New(get_lame_os_bitness()));
+NAN_METHOD(node_get_lame_os_bitness) {
+  info.GetReturnValue().Set(Nan::New<String>(get_lame_os_bitness()).ToLocalChecked());
 }
 
 
 /* lame_close() */
-Handle<Value> node_lame_close (const Arguments& args) {
+NAN_METHOD(node_lame_close) {
   UNWRAP_GFP;
   lame_close(gfp);
-  return Undefined();
 }
 
 
 /* malloc()'s a `lame_t` struct and returns it to JS land */
-Handle<Value> node_lame_init (const Arguments& args) {
-  HandleScope scope;
+NAN_METHOD(node_lame_init) {
 
   lame_global_flags *gfp = lame_init();
-  if (gfp == NULL) return Null();
+  if (gfp == NULL) return info.GetReturnValue().SetNull();
 
-  Handle<Value> wrapper = WrapPointer((char *)gfp);
-  return scope.Close(wrapper);
+  Nan::MaybeLocal<v8::Object> wrapper = WrapPointer((char *)gfp);
+  info.GetReturnValue().Set(wrapper.ToLocalChecked());
 }
 
 
 /* lame_encode_buffer_interleaved()
  * The main encoding function */
-Handle<Value> node_lame_encode_buffer_interleaved (const Arguments& args) {
+NAN_METHOD(node_lame_encode_buffer) {
   UNWRAP_GFP;
 
   // the input buffer
-  char *input = UnwrapPointer(args[1]);
-  int input_type = args[2]->Int32Value();
-  int num_samples = args[3]->Int32Value();
+  char *input = UnwrapPointer(info[1]);
+  pcm_type input_type = static_cast<pcm_type>(Nan::To<int32_t>(info[2]).FromMaybe(0));
+  int32_t channels = Nan::To<int32_t>(info[3]).FromMaybe(0);
+  int32_t num_samples = Nan::To<int32_t>(info[4]).FromMaybe(0);
 
   // the output buffer
-  int out_offset = args[5]->Int32Value();
-  char *output = UnwrapPointer(args[4], out_offset);
-  int output_size = args[6]->Int32Value();
+  int out_offset = Nan::To<int32_t>(info[6]).FromMaybe(0);
+  char *output = UnwrapPointer(info[5], out_offset);
+  int output_size = Nan::To<int32_t>(info[7]).FromMaybe(0);
 
   encode_req *request = new encode_req;
   request->gfp = gfp;
   request->input = (unsigned char *)input;
   request->input_type = input_type;
+  request->channels = channels;
   request->num_samples = num_samples;
   request->output = (unsigned char *)output;
   request->output_size = output_size;
-  request->callback = Persistent<Function>::New(Local<Function>::Cast(args[7]));
+  request->callback.Reset(info[8].As<Function>());
 
   // set a circular pointer so we can get the "encode_req" back later
   request->req.data = request;
 
   uv_queue_work(uv_default_loop(), &request->req,
-      node_lame_encode_buffer_interleaved_async,
-      (uv_after_work_cb)node_lame_encode_buffer_interleaved_after);
-
-  return Undefined();
+      node_lame_encode_buffer_async,
+      (uv_after_work_cb)node_lame_encode_buffer_after);
 }
 
 
 /* encode a buffer on the thread pool. */
-void node_lame_encode_buffer_interleaved_async (uv_work_t *req) {
+void node_lame_encode_buffer_async (uv_work_t *req) {
   encode_req *r = (encode_req *)req->data;
 
   if (r->input_type == PCM_TYPE_SHORT_INT) {
-    // encoding short int inpur buffer
-    r->rtn = lame_encode_buffer_interleaved(
-      r->gfp,
-      (short int *)r->input,
-      r->num_samples,
-      r->output,
-      r->output_size
-    );
+    if (r->channels > 1) {
+      // encoding short int interleaved input buffer
+      r->rtn = lame_encode_buffer_interleaved(
+        r->gfp,
+        (short int *)r->input,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    } else {
+      // encoding short int input buffer
+      r->rtn = lame_encode_buffer(
+        r->gfp,
+        (short int *)r->input,
+        NULL,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    }
   } else if (r->input_type == PCM_TYPE_FLOAT) {
-    // encoding float input buffer
-    r->rtn = lame_encode_buffer_interleaved_ieee_float(
-      r->gfp,
-      (float *)r->input,
-      r->num_samples,
-      r->output,
-      r->output_size
-    );
+    if (r->channels > 1) {
+      // encoding float interleaved input buffer
+      r->rtn = lame_encode_buffer_interleaved_ieee_float(
+        r->gfp,
+        (float *)r->input,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    } else {
+      // encoding float input buffer
+      r->rtn = lame_encode_buffer_ieee_float(
+        r->gfp,
+        (float *)r->input,
+        NULL,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    }
   } else if (r->input_type == PCM_TYPE_DOUBLE) {
-    // encoding double input buffer
-    r->rtn = lame_encode_buffer_interleaved_ieee_double(
-      r->gfp,
-      (double *)r->input,
-      r->num_samples,
-      r->output,
-      r->output_size
-    );
+    if (r->channels > 1) {
+      // encoding double interleaved input buffer
+      r->rtn = lame_encode_buffer_interleaved_ieee_double(
+        r->gfp,
+        (double *)r->input,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    } else {
+      // encoding double input buffer
+      r->rtn = lame_encode_buffer_ieee_double(
+        r->gfp,
+        (double *)r->input,
+        NULL,
+        r->num_samples,
+        r->output,
+        r->output_size
+      );
+    }
   }
 }
 
-void node_lame_encode_buffer_interleaved_after (uv_work_t *req) {
-  HandleScope scope;
+void node_lame_encode_buffer_after (uv_work_t *req) {
+  Nan::HandleScope scope;
 
   encode_req *r = (encode_req *)req->data;
 
   Handle<Value> argv[1];
-  argv[0] = Integer::New(r->rtn);
+  argv[0] = Nan::New<Integer>(r->rtn);
 
-  TryCatch try_catch;
+  Nan::TryCatch try_catch;
 
-  r->callback->Call(Context::GetCurrent()->Global(), 1, argv);
+  Nan::New(r->callback)->Call(Nan::GetCurrentContext()->Global(), 1, argv);
 
   // cleanup
-  r->callback.Dispose();
+  r->callback.Reset();
   delete r;
 
   if (try_catch.HasCaught()) {
@@ -173,19 +206,19 @@ void node_lame_encode_buffer_interleaved_after (uv_work_t *req) {
 
 
 /* lame_encode_flush_nogap() */
-Handle<Value> node_lame_encode_flush_nogap (const Arguments& args) {
+NAN_METHOD(node_lame_encode_flush_nogap) {
   UNWRAP_GFP;
 
   // the output buffer
-  int out_offset = args[2]->Int32Value();
-  char *output = UnwrapPointer(args[1], out_offset);
-  int output_size = args[3]->Int32Value();
+  int out_offset = Nan::To<int32_t>(info[2]).FromMaybe(0);
+  char *output = UnwrapPointer(info[1], out_offset);
+  int output_size = Nan::To<int32_t>(info[3]).FromMaybe(0);
 
   encode_req *request = new encode_req;
   request->gfp = gfp;
   request->output = (unsigned char *)output;
   request->output_size = output_size;
-  request->callback = Persistent<Function>::New(Local<Function>::Cast(args[4]));
+  request->callback.Reset(info[4].As<Function>());
 
   // set a circular pointer so we can get the "encode_req" back later
   request->req.data = request;
@@ -193,8 +226,6 @@ Handle<Value> node_lame_encode_flush_nogap (const Arguments& args) {
   uv_queue_work(uv_default_loop(), &request->req,
       node_lame_encode_flush_nogap_async,
       (uv_after_work_cb)node_lame_encode_flush_nogap_after);
-
-  return Undefined();
 }
 
 void node_lame_encode_flush_nogap_async (uv_work_t *req) {
@@ -212,15 +243,16 @@ void node_lame_encode_flush_nogap_async (uv_work_t *req) {
  * Must be called *after* lame_encode_flush()
  * TODO: Make async
  */
-Handle<Value> node_lame_get_id3v1_tag (const Arguments& args) {
+NAN_METHOD(node_lame_get_id3v1_tag) {
+
   UNWRAP_GFP;
 
-  Local<Object> outbuf = args[1]->ToObject();
+  Local<Object> outbuf = info[1]->ToObject();
   unsigned char *buf = (unsigned char *)Buffer::Data(outbuf);
   size_t buf_size = (size_t)Buffer::Length(outbuf);
 
   size_t b = lame_get_id3v1_tag(gfp, buf, buf_size);
-  return scope.Close(Integer::New(b));
+  info.GetReturnValue().Set(Nan::New<Integer>(static_cast<uint32_t>(b)));
 }
 
 
@@ -229,82 +261,78 @@ Handle<Value> node_lame_get_id3v1_tag (const Arguments& args) {
  * Must be called *before* lame_init_params()
  * TODO: Make async
  */
-Handle<Value> node_lame_get_id3v2_tag (const Arguments& args) {
+NAN_METHOD(node_lame_get_id3v2_tag) {
   UNWRAP_GFP;
 
-  Local<Object> outbuf = args[1]->ToObject();
+  Local<Object> outbuf = info[1]->ToObject();
   unsigned char *buf = (unsigned char *)Buffer::Data(outbuf);
   size_t buf_size = (size_t)Buffer::Length(outbuf);
 
   size_t b = lame_get_id3v2_tag(gfp, buf, buf_size);
-  return scope.Close(Integer::New(b));
+  info.GetReturnValue().Set(Nan::New<Integer>(static_cast<uint32_t>(b)));
 }
 
 
 /* lame_init_params(gfp) */
-Handle<Value> node_lame_init_params (const Arguments& args) {
+NAN_METHOD(node_lame_init_params) {
   UNWRAP_GFP;
-  return scope.Close(Number::New(lame_init_params(gfp)));
+  info.GetReturnValue().Set(Nan::New<Number>(lame_init_params(gfp)));
 }
 
 
 /* lame_print_internals() */
-Handle<Value> node_lame_print_internals (const Arguments& args) {
+NAN_METHOD(node_lame_print_internals) {
   UNWRAP_GFP;
   lame_print_internals(gfp);
-  return Undefined();
 }
 
 
 /* lame_print_config() */
-Handle<Value> node_lame_print_config (const Arguments& args) {
+NAN_METHOD(node_lame_print_config) {
   UNWRAP_GFP;
   lame_print_config(gfp);
-  return Undefined();
 }
 
 
 /* lame_get_bitrate() */
-Handle<Value> node_lame_bitrates (const Arguments& args) {
-  HandleScope scope;
+NAN_METHOD(node_lame_bitrates) {
   int v;
   int x = 3;
   int y = 16;
   Local<Array> n;
-  Local<Array> ret = Array::New();
+  Local<Array> ret = Nan::New<Array>();
   for (int i = 0; i < x; i++) {
-    n = Array::New();
+    n = Nan::New<Array>();
     for (int j = 0; j < y; j++) {
       v = lame_get_bitrate(i, j);
       if (v >= 0) {
-        n->Set(j, Integer::New(v));
+        Nan::Set(n, j, Nan::New<Integer>(v));
       }
     }
-    ret->Set(i, n);
+    Nan::Set(ret, i, n);
   }
-  return scope.Close(ret);
+  info.GetReturnValue().Set(ret);
 }
 
 
 /* lame_get_samplerate() */
-Handle<Value> node_lame_samplerates (const Arguments& args) {
-  HandleScope scope;
+NAN_METHOD(node_lame_samplerates) {
   int v;
   int x = 3;
   int y = 4;
   Local<Array> n;
-  Local<Array> ret = Array::New();
+  Local<Array> ret = Nan::New<Array>();
   for (int i = 0; i < x; i++) {
-    n = Array::New();
+    n = Nan::New<Array>();
     for (int j = 0; j < y; j++) {
       v = lame_get_samplerate(i, j);
       if (v >= 0) {
-        n->Set(j, Integer::New(v));
+        Nan::Set(n, j, Nan::New<Integer>(v));
       }
     }
-    ret->Set(i, n);
+    Nan::Set(ret, i, n);
   }
-  return scope.Close(ret);
+  info.GetReturnValue().Set(ret);
 }
 
 // define the node_lame_get/node_lame_set functions
@@ -346,11 +374,11 @@ FN(int, Int32, highpasswidth);
 
 
 void InitLame(Handle<Object> target) {
-  HandleScope scope;
+  Nan::HandleScope scope;
 
   /* sizeof's */
 #define SIZEOF(value) \
-  target->Set(String::NewSymbol("sizeof_" #value), Integer::New(sizeof(value)), \
+  Nan::ForceSet(target, Nan::New<String>("sizeof_" #value).ToLocalChecked(), Nan::New<Integer>(static_cast<uint32_t>(sizeof(value))), \
       static_cast<PropertyAttribute>(ReadOnly|DontDelete))
   SIZEOF(short);
   SIZEOF(int);
@@ -359,7 +387,7 @@ void InitLame(Handle<Object> target) {
 
 
 #define CONST_INT(value) \
-  target->Set(String::NewSymbol(#value), Integer::New(value), \
+  Nan::ForceSet(target, Nan::New<String>(#value).ToLocalChecked(), Nan::New<Integer>(value), \
       static_cast<PropertyAttribute>(ReadOnly|DontDelete));
 
   // vbr_mode_e
@@ -394,24 +422,24 @@ void InitLame(Handle<Object> target) {
   CONST_INT(PCM_TYPE_DOUBLE)
 
   // Functions
-  NODE_SET_METHOD(target, "get_lame_version", node_get_lame_version);
-  NODE_SET_METHOD(target, "get_lame_os_bitness", node_get_lame_os_bitness);
-  NODE_SET_METHOD(target, "lame_close", node_lame_close);
-  NODE_SET_METHOD(target, "lame_encode_buffer_interleaved", node_lame_encode_buffer_interleaved);
-  NODE_SET_METHOD(target, "lame_encode_flush_nogap", node_lame_encode_flush_nogap);
-  NODE_SET_METHOD(target, "lame_get_id3v1_tag", node_lame_get_id3v1_tag);
-  NODE_SET_METHOD(target, "lame_get_id3v2_tag", node_lame_get_id3v2_tag);
-  NODE_SET_METHOD(target, "lame_init_params", node_lame_init_params);
-  NODE_SET_METHOD(target, "lame_print_config", node_lame_print_config);
-  NODE_SET_METHOD(target, "lame_print_internals", node_lame_print_internals);
-  NODE_SET_METHOD(target, "lame_init", node_lame_init);
-  NODE_SET_METHOD(target, "lame_bitrates", node_lame_bitrates);
-  NODE_SET_METHOD(target, "lame_samplerates", node_lame_samplerates);
+  Nan::SetMethod(target, "get_lame_version", node_get_lame_version);
+  Nan::SetMethod(target, "get_lame_os_bitness", node_get_lame_os_bitness);
+  Nan::SetMethod(target, "lame_close", node_lame_close);
+  Nan::SetMethod(target, "lame_encode_buffer", node_lame_encode_buffer);
+  Nan::SetMethod(target, "lame_encode_flush_nogap", node_lame_encode_flush_nogap);
+  Nan::SetMethod(target, "lame_get_id3v1_tag", node_lame_get_id3v1_tag);
+  Nan::SetMethod(target, "lame_get_id3v2_tag", node_lame_get_id3v2_tag);
+  Nan::SetMethod(target, "lame_init_params", node_lame_init_params);
+  Nan::SetMethod(target, "lame_print_config", node_lame_print_config);
+  Nan::SetMethod(target, "lame_print_internals", node_lame_print_internals);
+  Nan::SetMethod(target, "lame_init", node_lame_init);
+  Nan::SetMethod(target, "lame_bitrates", node_lame_bitrates);
+  Nan::SetMethod(target, "lame_samplerates", node_lame_samplerates);
 
   // Get/Set functions
 #define LAME_SET_METHOD(fn) \
-  NODE_SET_METHOD(target, "lame_get_" #fn, PASTE(node_lame_get_, fn)); \
-  NODE_SET_METHOD(target, "lame_set_" #fn, PASTE(node_lame_set_, fn));
+  Nan::SetMethod(target, "lame_get_" #fn, PASTE(node_lame_get_, fn)); \
+  Nan::SetMethod(target, "lame_set_" #fn, PASTE(node_lame_set_, fn));
 
   LAME_SET_METHOD(num_samples);
   LAME_SET_METHOD(in_samplerate);
@@ -450,11 +478,11 @@ void InitLame(Handle<Object> target) {
   // ...
 
   /*
-  NODE_SET_METHOD(target, "lame_get_decode_only", node_lame_get_decode_only);
-  NODE_SET_METHOD(target, "lame_set_decode_only", node_lame_set_decode_only);
-  NODE_SET_METHOD(target, "lame_get_framesize", node_lame_get_framesize);
-  NODE_SET_METHOD(target, "lame_get_frameNum", node_lame_get_frameNum);
-  NODE_SET_METHOD(target, "lame_get_version", node_lame_get_version);
+  Nan::SetMethod(target, "lame_get_decode_only", node_lame_get_decode_only);
+  Nan::SetMethod(target, "lame_set_decode_only", node_lame_set_decode_only);
+  Nan::SetMethod(target, "lame_get_framesize", node_lame_get_framesize);
+  Nan::SetMethod(target, "lame_get_frameNum", node_lame_get_frameNum);
+  Nan::SetMethod(target, "lame_get_version", node_lame_get_version);
   */
 
 }
